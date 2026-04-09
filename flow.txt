@@ -1,0 +1,1210 @@
+================================================================================
+                    ONLINE PROCTORING SYSTEM - FLOW DOCUMENTATION
+================================================================================
+
+TABLE OF CONTENTS
+-----------------
+1. System Overview
+2. Main Flow Diagram
+3. Detailed Phase Breakdown
+4. Module-wise Flow
+5. Decision Logic Flow
+6. Data Flow
+7. Complete Step-by-Step Execution
+
+================================================================================
+1. SYSTEM OVERVIEW
+================================================================================
+
+The Online Proctoring System is an AI-powered exam monitoring solution that 
+combines multiple deep learning models to ensure exam integrity. It performs:
+
+- Identity verification using face recognition
+- Adaptive head pose monitoring with baseline calibration
+- Eye gaze tracking to detect looking away
+- Multi-person detection
+- Prohibited object detection (phones, books, laptops)
+
+Technology Stack:
+- FaceNet: 128-dimensional face embeddings for identity verification
+- MediaPipe: Face detection and 468 facial landmarks
+- YOLOv8: Real-time object detection
+- OpenCV: Video processing and computer vision operations
+
+
+================================================================================
+2. MAIN FLOW DIAGRAM
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          START APPLICATION                               │
+└────────────────────────────────┬────────────────────────────────────────┘
+                                 │
+                    ┌────────────▼────────────┐
+                    │  INITIALIZATION PHASE   │
+                    │  - Load AI Models       │
+                    │  - FaceNet              │
+                    │  - MediaPipe            │
+                    │  - YOLOv8               │
+                    └────────────┬────────────┘
+                                 │
+                    ┌────────────▼────────────┐
+                    │  REFERENCE LOADING      │
+                    │  - Load ref image       │
+                    │  - Detect face          │
+                    │  - Generate embedding   │
+                    └────────────┬────────────┘
+                                 │
+                    ┌────────────▼────────────┐
+                    │   OPEN VIDEO STREAM     │
+                    │   - Initialize capture  │
+                    │   - Set up counters     │
+                    └────────────┬────────────┘
+                                 │
+                    ┌────────────▼────────────────────────┐
+                    │   CALIBRATION PHASE (First 3 frames)│
+                    │   - Collect head angles             │
+                    │   - Calculate baseline yaw/pitch/roll│
+                    │   - Establish neutral position      │
+                    └────────────┬────────────────────────┘
+                                 │
+                    ┌────────────▼────────────┐
+                    │   MAIN PROCESSING LOOP  │◄──────────┐
+                    │   (Frames 4 to MAX)     │           │
+                    └────────────┬────────────┘           │
+                                 │                        │
+        ┌────────────────────────┼────────────────────────┼───────────┐
+        │                        │                        │           │
+  ┌─────▼─────┐        ┌────────▼────────┐    ┌─────────▼────────┐  │
+  │   FACE    │        │   HEAD POSE     │    │    EYE GAZE      │  │
+  │VERIFICATION│       │   ESTIMATION    │    │    TRACKING      │  │
+  │           │        │  (vs Baseline)  │    │                  │  │
+  │- Detect   │        │                 │    │ - Track iris     │  │
+  │- Embed    │        │ - Get angles    │    │ - Calc position  │  │
+  │- Compare  │        │ - Calculate Δ   │    │ - Detect looking │  │
+  └─────┬─────┘        └────────┬────────┘    └─────────┬────────┘  │
+        │                       │                        │           │
+        └───────────┬───────────┴────────────┬───────────┘           │
+                    │                        │                       │
+           ┌────────▼────────┐      ┌────────▼────────┐             │
+           │ YOLO DETECTION  │      │  FRAME ANALYSIS │             │
+           │ - Person count  │      │  - Log results  │             │
+           │ - Objects       │      │  - Update stats │             │
+           └────────┬────────┘      └────────┬────────┘             │
+                    │                        │                       │
+                    └────────────┬───────────┘                       │
+                                 │                                   │
+                    ┌────────────▼────────────┐                      │
+                    │  More frames?           │                      │
+                    │  (processed < MAX)      │──────YES─────────────┘
+                    └────────────┬────────────┘
+                                 │ NO
+                    ┌────────────▼────────────┐
+                    │   FINAL DECISION        │
+                    │   - Calculate verdicts  │
+                    │   - Generate report     │
+                    │   - Overall verdict     │
+                    └────────────┬────────────┘
+                                 │
+                    ┌────────────▼────────────┐
+                    │   DISPLAY RESULTS       │
+                    │   - Identity            │
+                    │   - Deviation           │
+                    │   - Gaze                │
+                    │   - Person count        │
+                    │   - Objects             │
+                    │   - Final verdict       │
+                    └────────────┬────────────┘
+                                 │
+                    ┌────────────▼────────────┐
+                    │         END             │
+                    └─────────────────────────┘
+
+
+================================================================================
+3. DETAILED PHASE BREAKDOWN
+================================================================================
+
+PHASE 1: INITIALIZATION
+-----------------------
+Purpose: Load all AI models and prepare system
+Duration: ~5-10 seconds (one-time on startup)
+
+Steps:
+1. Import libraries (OpenCV, NumPy, MediaPipe, FaceNet, YOLO)
+2. Load FaceNet model for face embeddings
+3. Initialize MediaPipe Face Detection (confidence: 0.6)
+4. Initialize MediaPipe Face Mesh (468 landmarks, refine_landmarks=True)
+5. Load YOLOv8 Nano model (auto-downloads if first run)
+6. Define 3D face model points for PnP algorithm
+7. Set landmark indices for pose estimation
+8. Set eye landmark indices for gaze tracking
+9. Define prohibited object classes (phone, book, laptop)
+
+Output: All models loaded and ready
+Memory: ~500MB-1GB depending on models
+
+
+PHASE 2: REFERENCE LOADING
+---------------------------
+Purpose: Create face embedding of authorized person
+Input: Reference image file path
+
+Steps:
+1. Read reference image from disk
+2. Convert BGR to RGB color space
+3. Run MediaPipe face detection
+4. Extract face bounding box coordinates
+5. Crop face region from image
+6. Resize face to 160x160 (FaceNet input size)
+7. Generate 128-dimensional face embedding
+8. Store embedding for comparison
+
+Output: Reference embedding vector (128 floats)
+Validation: Raises error if no face detected
+
+
+PHASE 3: VIDEO INITIALIZATION
+------------------------------
+Purpose: Prepare video stream for processing
+Input: Video file path
+
+Steps:
+1. Open video file with cv2.VideoCapture
+2. Initialize frame counters (frame_count, processed)
+3. Initialize detection counters:
+   - same_person_frames = 0
+   - different_person_frames = 0
+   - deviation_frames = 0
+   - gaze_deviation_frames = 0
+   - multiple_person_frames = 0
+   - prohibited_object_frames = 0
+4. Initialize baseline calibration variables:
+   - baseline_yaw = None
+   - baseline_pitch = None
+   - baseline_roll = None
+   - baseline_calibrated = False
+   - calibration_yaws = []
+   - calibration_pitches = []
+   - calibration_rolls = []
+5. Set MAX_FRAMES = 50 (total frames to process)
+6. Set CALIBRATION_FRAMES = 3
+
+Output: Video stream ready, all counters at zero
+
+
+PHASE 4: BASELINE CALIBRATION (Frames 1-3)
+-------------------------------------------
+Purpose: Establish user's natural head position as baseline
+Duration: First 3 processed frames
+Critical: User should maintain natural exam-taking position
+
+Steps for EACH calibration frame:
+1. Read frame from video
+2. Skip if not every 10th frame (frame_count % 10 != 0)
+3. Convert frame BGR to RGB
+4. Detect face with MediaPipe
+5. Extract bounding box
+6. Verify face identity (optional during calibration)
+7. Get face mesh landmarks
+8. Calculate head pose angles using PnP:
+   - Absolute yaw (left/right rotation)
+   - Absolute pitch (up/down rotation)
+   - Absolute roll (tilt rotation)
+9. APPEND angles to calibration lists:
+   - calibration_yaws.append(yaw)
+   - calibration_pitches.append(pitch)
+   - calibration_rolls.append(roll)
+10. Log: "Calibrating (X/3)"
+
+After 3rd calibration frame:
+1. Calculate baseline as MEAN of collected angles:
+   - baseline_yaw = mean(calibration_yaws)
+   - baseline_pitch = mean(calibration_pitches)
+   - baseline_roll = mean(calibration_rolls)
+2. Set baseline_calibrated = True
+3. Print baseline values
+   Example: "Baseline: Yaw=5.3°, Pitch=110.2°, Roll=-2.1°"
+
+Why Important:
+- Handles any starting position (e.g., pitch=110° instead of 90°)
+- Eliminates false positives from non-centered users
+- Adapts to individual ergonomics
+- Baseline becomes the "zero point" for deviation detection
+
+
+PHASE 5: MAIN PROCESSING LOOP (Frames 4+)
+------------------------------------------
+Purpose: Analyze each frame for violations
+Continues until: processed >= MAX_FRAMES or video ends
+
+Frame Processing Sequence:
+1. Read frame
+2. Check frame skip (process every 10th)
+3. Convert to RGB
+4. → Go to SUB-FLOW A: Face Verification
+5. → Go to SUB-FLOW B: Head Pose Estimation
+6. → Go to SUB-FLOW C: Eye Gaze Tracking
+7. → Go to SUB-FLOW D: YOLO Detection
+8. Compile and log results
+9. Increment counters
+
+Output per frame: Single log line with all detection results
+
+
+PHASE 6: FINAL DECISION
+------------------------
+Purpose: Calculate overall verdicts based on statistics
+Input: All counter values from processing loop
+
+Steps:
+1. Calculate analyzed_frames = processed - CALIBRATION_FRAMES
+2. IDENTITY VERDICT:
+   IF same_person_frames > different_person_frames
+      → "AUTHORIZED PERSON"
+   ELSE
+      → "UNAUTHORIZED PERSON"
+
+3. DEVIATION VERDICT:
+   IF deviation_frames >= 25% of analyzed_frames
+      → "DEVIATED"
+   ELSE
+      → "NOT DEVIATED"
+
+4. GAZE VERDICT:
+   IF gaze_deviation_frames >= 30% of analyzed_frames
+      → "SUSPICIOUS EYE MOVEMENT"
+   ELSE
+      → "NORMAL EYE MOVEMENT"
+
+5. PERSON COUNT VERDICT:
+   IF multiple_person_frames >= 20% of analyzed_frames
+      → "MULTIPLE PERSONS DETECTED"
+   ELSE
+      → "SINGLE PERSON"
+
+6. OBJECT DETECTION VERDICT:
+   IF prohibited_object_frames >= 15% of analyzed_frames
+      → "PROHIBITED OBJECTS DETECTED"
+   ELSE
+      → "NO PROHIBITED OBJECTS"
+
+7. OVERALL VERDICT (Priority order):
+   IF "UNAUTHORIZED PERSON"
+      → "⚠️ EXAM INVALID - Unauthorized person detected"
+   ELSE IF "MULTIPLE PERSONS DETECTED"
+      → "⚠️ EXAM INVALID - Multiple persons detected"
+   ELSE IF "PROHIBITED OBJECTS DETECTED"
+      → "⚠️ EXAM INVALID - Prohibited objects found"
+   ELSE IF "DEVIATED" OR "SUSPICIOUS EYE MOVEMENT"
+      → "⚠️ EXAM SUSPICIOUS - Review required"
+   ELSE
+      → "✓ EXAM VALID - No violations detected"
+
+Output: Complete report with all verdicts and statistics
+
+
+================================================================================
+4. MODULE-WISE FLOW
+================================================================================
+
+SUB-FLOW A: FACE VERIFICATION
+------------------------------
+Function: get_face_embedding() + comparison
+Purpose: Verify test-taker is authorized person
+
+┌─────────────────────────────────┐
+│  INPUT: Frame, Bounding Box     │
+└────────────┬────────────────────┘
+             │
+┌────────────▼────────────────────┐
+│  Crop face using bbox coords    │
+│  face_crop = frame[y:y+h, x:x+w]│
+└────────────┬────────────────────┘
+             │
+┌────────────▼────────────────────┐
+│  Convert BGR → RGB              │
+└────────────┬────────────────────┘
+             │
+┌────────────▼────────────────────┐
+│  Resize to 160x160              │
+│  (FaceNet input requirement)    │
+└────────────┬────────────────────┘
+             │
+┌────────────▼────────────────────┐
+│  Generate 128-D embedding       │
+│  using FaceNet model            │
+└────────────┬────────────────────┘
+             │
+┌────────────▼────────────────────┐
+│  Calculate Euclidean distance   │
+│  distance = ||emb - ref_emb||   │
+└────────────┬────────────────────┘
+             │
+         ┌───▼───┐
+         │ < 1.0?│
+         └───┬───┘
+      YES    │    NO
+    ┌────────┴────────┐
+    │                 │
+┌───▼────┐      ┌─────▼──────┐
+│ Match  │      │  No Match  │
+│"Authorized"   │"Unauthorized"
+└───┬────┘      └─────┬──────┘
+    │                 │
+    │  Update counters│
+    ▼                 ▼
+same_person++  different_person++
+
+
+SUB-FLOW B: HEAD POSE ESTIMATION (WITH BASELINE)
+-------------------------------------------------
+Function: get_head_pose() + baseline comparison
+Purpose: Detect head orientation deviation from neutral
+
+┌─────────────────────────────────┐
+│  INPUT: Frame, Landmarks        │
+└────────────┬────────────────────┘
+             │
+┌────────────▼────────────────────┐
+│  Extract 6 key landmarks:       │
+│  - Nose tip (1)                 │
+│  - Chin (152)                   │
+│  - Left eye corner (33)         │
+│  - Right eye corner (263)       │
+│  - Left mouth corner (61)       │
+│  - Right mouth corner (291)     │
+└────────────┬────────────────────┘
+             │
+┌────────────▼────────────────────┐
+│  Convert to 2D image coords     │
+│  (pixel x, y positions)         │
+└────────────┬────────────────────┘
+             │
+┌────────────▼────────────────────┐
+│  Define 3D model points         │
+│  (pre-defined based on          │
+│   average face geometry)        │
+└────────────┬────────────────────┘
+             │
+┌────────────▼────────────────────┐
+│  Set up camera matrix           │
+│  [w, 0, w/2]                    │
+│  [0, w, h/2]                    │
+│  [0, 0, 1  ]                    │
+└────────────┬────────────────────┘
+             │
+┌────────────▼────────────────────┐
+│  Solve PnP (Perspective-n-Point)│
+│  Find rotation vector           │
+└────────────┬────────────────────┘
+             │
+┌────────────▼────────────────────┐
+│  Convert to rotation matrix     │
+│  using Rodrigues formula        │
+└────────────┬────────────────────┘
+             │
+┌────────────▼────────────────────┐
+│  Extract Euler angles:          │
+│  pitch = atan2(R[2,1], R[2,2])  │
+│  yaw = atan2(-R[2,0], sy)       │
+│  roll = atan2(R[1,0], R[0,0])   │
+│  Convert radians → degrees      │
+└────────────┬────────────────────┘
+             │
+      ┌──────▼──────┐
+      │  Calibrated?│
+      └──────┬──────┘
+      NO     │       YES
+    ┌────────┴────────┐
+    │                 │
+┌───▼────────┐   ┌────▼──────────┐
+│ CALIBRATION│   │  DETECTION    │
+│ MODE       │   │  MODE         │
+│            │   │               │
+│ Collect:   │   │ Calculate Δ:  │
+│ yaw, pitch,│   │ rel_yaw =     │
+│ roll       │   │  yaw - base_yaw│
+│            │   │ rel_pitch =   │
+│ Append to  │   │  pitch - base_│
+│ lists      │   │  pitch        │
+│            │   │ rel_roll =    │
+│ Check if   │   │  roll - base_ │
+│ 3 frames   │   │  roll         │
+│ collected  │   │               │
+│            │   │ Check thresh: │
+│ If yes:    │   │ |ΔY|>15° OR   │
+│ Calculate  │   │ |ΔP|>10° OR   │
+│ mean →     │   │ |ΔR|>10°      │
+│ baseline   │   │               │
+└────────────┘   └────┬──────────┘
+                      │
+                 ┌────▼────┐
+                 │Deviating│
+                 └────┬────┘
+                  YES │ NO
+              ┌───────┴────────┐
+              │                │
+          ┌───▼───┐      ┌─────▼─────┐
+          │"Deviating"   │  "Normal" │
+          └───┬───┘      └───────────┘
+              │
+       deviation_frames++
+
+
+SUB-FLOW C: EYE GAZE TRACKING
+------------------------------
+Function: get_eye_gaze()
+Purpose: Detect if user is looking away from screen
+
+┌─────────────────────────────────┐
+│  INPUT: Frame, Landmarks        │
+└────────────┬────────────────────┘
+             │
+┌────────────▼────────────────────┐
+│  Extract LEFT eye landmarks:    │
+│  - Inner corner (133)           │
+│  - Outer corner (33)            │
+│  - Iris center (468)            │
+└────────────┬────────────────────┘
+             │
+┌────────────▼────────────────────┐
+│  Convert to pixel coordinates   │
+│  left_iris_x = iris.x * width   │
+│  left_inner_x = inner.x * width │
+│  left_outer_x = outer.x * width │
+└────────────┬────────────────────┘
+             │
+┌────────────▼────────────────────┐
+│  Calculate LEFT eye width       │
+│  left_width = |inner_x-outer_x| │
+└────────────┬────────────────────┘
+             │
+┌────────────▼────────────────────┐
+│  Calculate LEFT gaze ratio      │
+│  left_ratio = (iris_x - outer_x)│
+│               / left_width      │
+│                                 │
+│  0.0 = Looking far right        │
+│  0.5 = Looking center           │
+│  1.0 = Looking far left         │
+└────────────┬────────────────────┘
+             │
+┌────────────▼────────────────────┐
+│  REPEAT for RIGHT eye:          │
+│  - Inner corner (362)           │
+│  - Outer corner (263)           │
+│  - Iris center (473)            │
+│  Calculate right_ratio          │
+└────────────┬────────────────────┘
+             │
+┌────────────▼────────────────────┐
+│  Average both eyes:             │
+│  avg_ratio = (left + right) / 2 │
+└────────────┬────────────────────┘
+             │
+        ┌────▼────┐
+        │ Ratio?  │
+        └────┬────┘
+        ┌────┴────┐
+        │         │
+    < 0.35   0.35-0.65   > 0.65
+        │         │         │
+  ┌─────▼──┐  ┌───▼───┐  ┌─▼─────┐
+  │Looking │  │Looking│  │Looking│
+  │ Right  │  │Center │  │ Left  │
+  └───┬────┘  └───┬───┘  └───┬───┘
+      │           │           │
+      └─────┬─────┴─────┬─────┘
+            │           │
+      ┌─────▼──────┐    │
+      │ Suspicious │    │
+      └─────┬──────┘    │
+            │           │
+    gaze_deviation++    │
+                        │
+                   (No increment)
+
+
+SUB-FLOW D: YOLO OBJECT DETECTION
+----------------------------------
+Function: detect_persons_and_objects()
+Purpose: Detect multiple persons and prohibited items
+
+┌─────────────────────────────────┐
+│  INPUT: Current Frame           │
+└────────────┬────────────────────┘
+             │
+┌────────────▼────────────────────┐
+│  Run YOLOv8 inference           │
+│  results = yolo_model(frame)    │
+│  (verbose=False for clean output)
+└────────────┬────────────────────┘
+             │
+┌────────────▼────────────────────┐
+│  Initialize counters:           │
+│  person_count = 0               │
+│  prohibited_objects = {}        │
+└────────────┬────────────────────┘
+             │
+┌────────────▼────────────────────┐
+│  For each detection result:     │
+│  Loop through all boxes         │
+└────────────┬────────────────────┘
+             │
+┌────────────▼────────────────────┐
+│  Extract:                       │
+│  - Class ID (cls)               │
+│  - Confidence score (conf)      │
+│  - Bounding box coordinates     │
+└────────────┬────────────────────┘
+             │
+      ┌──────▼──────┐
+      │ Class ID?   │
+      └──────┬──────┘
+             │
+    ┌────────┴────────┐
+    │                 │
+┌───▼────┐      ┌─────▼─────┐
+│ Class=0│      │ Class in  │
+│(Person)│      │{67,73,63}?│
+└───┬────┘      └─────┬─────┘
+    │                 │
+┌───▼────┐      ┌─────▼─────┐
+│conf>0.5│      │ conf>0.4? │
+└───┬────┘      └─────┬─────┘
+  YES│              YES│
+    │                 │
+┌───▼────┐      ┌─────▼─────────┐
+│person_ │      │ Map class to  │
+│count++ │      │ name:         │
+└────────┘      │ 67→Cell Phone │
+                │ 73→Book       │
+                │ 63→Laptop     │
+                └─────┬─────────┘
+                      │
+                ┌─────▼─────────┐
+                │ Increment obj │
+                │ count in dict │
+                └───────────────┘
+             │
+┌────────────▼────────────────────┐
+│  Return person_count and        │
+│  prohibited_objects dict        │
+└────────────┬────────────────────┘
+             │
+      ┌──────▼──────┐
+      │person_count?│
+      └──────┬──────┘
+        ┌────┴────┐
+      > 1│       =1│
+    ┌────▼──┐  ┌──▼────┐
+    │Multiple│ │Single │
+    └────┬───┘ └───────┘
+         │
+   multiple_person++
+   
+      ┌──────▼──────────┐
+      │Objects detected?│
+      └──────┬──────────┘
+          YES│
+    ┌────────▼─────────┐
+    │prohibited_object_│
+    │frames++          │
+    │                  │
+    │Update objects    │
+    │detected dict     │
+    └──────────────────┘
+
+
+================================================================================
+5. DECISION LOGIC FLOW
+================================================================================
+
+FINAL VERDICT DETERMINATION
+----------------------------
+
+INPUT: All counter values after processing loop completes
+
+┌──────────────────────────────────────────┐
+│  Calculate analyzed_frames =             │
+│  processed - CALIBRATION_FRAMES          │
+└──────────────────┬───────────────────────┘
+                   │
+┌──────────────────▼───────────────────────┐
+│  STEP 1: Identity Check                  │
+│  IF same_person > different_person       │
+│     identity = "AUTHORIZED"              │
+│  ELSE                                    │
+│     identity = "UNAUTHORIZED"            │
+└──────────────────┬───────────────────────┘
+                   │
+┌──────────────────▼───────────────────────┐
+│  STEP 2: Head Pose Deviation Check       │
+│  threshold = 0.25 * analyzed_frames      │
+│  IF deviation_frames >= threshold        │
+│     deviation = "DEVIATED"               │
+│  ELSE                                    │
+│     deviation = "NOT DEVIATED"           │
+└──────────────────┬───────────────────────┘
+                   │
+┌──────────────────▼───────────────────────┐
+│  STEP 3: Eye Gaze Check                  │
+│  threshold = 0.30 * analyzed_frames      │
+│  IF gaze_deviation_frames >= threshold   │
+│     gaze = "SUSPICIOUS EYE MOVEMENT"     │
+│  ELSE                                    │
+│     gaze = "NORMAL EYE MOVEMENT"         │
+└──────────────────┬───────────────────────┘
+                   │
+┌──────────────────▼───────────────────────┐
+│  STEP 4: Person Count Check              │
+│  threshold = 0.20 * analyzed_frames      │
+│  IF multiple_person_frames >= threshold  │
+│     person = "MULTIPLE PERSONS DETECTED" │
+│  ELSE                                    │
+│     person = "SINGLE PERSON"             │
+└──────────────────┬───────────────────────┘
+                   │
+┌──────────────────▼───────────────────────┐
+│  STEP 5: Object Detection Check          │
+│  threshold = 0.15 * analyzed_frames      │
+│  IF prohibited_object_frames >= threshold│
+│     objects = "PROHIBITED OBJECTS DETECTED"
+│  ELSE                                    │
+│     objects = "NO PROHIBITED OBJECTS"    │
+└──────────────────┬───────────────────────┘
+                   │
+┌──────────────────▼───────────────────────┐
+│  STEP 6: Overall Verdict (Priority)     │
+│  ┌─────────────────────────────────────┐│
+│  │ IF identity = "UNAUTHORIZED"        ││
+│  │    → EXAM INVALID (Unauthorized)    ││
+│  ├─────────────────────────────────────┤│
+│  │ ELSE IF person = "MULTIPLE DETECTED"││
+│  │    → EXAM INVALID (Multiple persons)││
+│  ├─────────────────────────────────────┤│
+│  │ ELSE IF objects = "PROHIBITED..."   ││
+│  │    → EXAM INVALID (Objects)         ││
+│  ├─────────────────────────────────────┤│
+│  │ ELSE IF deviation = "DEVIATED" OR   ││
+│  │         gaze = "SUSPICIOUS"         ││
+│  │    → EXAM SUSPICIOUS (Review)       ││
+│  ├─────────────────────────────────────┤│
+│  │ ELSE                                ││
+│  │    → EXAM VALID (No violations)     ││
+│  └─────────────────────────────────────┘│
+└───────────────────────────────────────────┘
+
+
+THRESHOLD SUMMARY
+-----------------
+Violation Type          | Threshold | Comment
+------------------------|-----------|---------------------------
+Face Mismatch           | > 50%     | Majority frames unauthorized
+Head Deviation          | >= 25%    | Of analyzed frames
+Eye Gaze Deviation      | >= 30%    | Of analyzed frames
+Multiple Persons        | >= 20%    | Of analyzed frames
+Prohibited Objects      | >= 15%    | Of analyzed frames
+
+
+================================================================================
+6. DATA FLOW
+================================================================================
+
+INPUT DATA → PROCESSING → OUTPUT DATA
+
+┌─────────────────────────┐
+│  INPUT FILES            │
+├─────────────────────────┤
+│ 1. reference_image.jpg  │──┐
+│ 2. test_video.mp4       │  │
+└─────────────────────────┘  │
+                             │
+                        ┌────▼──────┐
+                        │ LOAD &    │
+                        │ PREPROCESS│
+                        └────┬──────┘
+                             │
+┌────────────────────────────┴───────────────────────────────┐
+│                   PROCESSING PIPELINE                       │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐    │
+│  │  Reference   │  │   Baseline   │  │  Frame-by-   │    │
+│  │  Embedding   │  │  Calibration │  │  Frame       │    │
+│  │  (128 floats)│  │  (3 angles)  │  │  Analysis    │    │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘    │
+│         │                 │                 │             │
+│         └─────────┬───────┴─────────┬───────┘             │
+│                   │                 │                     │
+│         ┌─────────▼─────────────────▼─────────┐           │
+│         │  DETECTION & COMPARISON              │           │
+│         │  - Face verification                 │           │
+│         │  - Head pose (relative to baseline)  │           │
+│         │  - Eye gaze direction                │           │
+│         │  - Person count                      │           │
+│         │  - Object detection                  │           │
+│         └─────────┬──────────────────────────┘           │
+│                   │                                       │
+│         ┌─────────▼─────────┐                            │
+│         │  FRAME STATISTICS │                            │
+│         │  - same_person    │                            │
+│         │  - different_person│                           │
+│         │  - deviation      │                            │
+│         │  - gaze_deviation │                            │
+│         │  - multiple_person│                            │
+│         │  - prohibited_obj │                            │
+│         └─────────┬─────────┘                            │
+│                   │                                       │
+└───────────────────┼───────────────────────────────────────┘
+                    │
+          ┌─────────▼─────────┐
+          │  DECISION ENGINE  │
+          │  - Apply thresholds│
+          │  - Calculate %     │
+          │  - Determine verdict│
+          └─────────┬─────────┘
+                    │
+┌───────────────────▼────────────────────┐
+│          OUTPUT REPORT                 │
+├────────────────────────────────────────┤
+│ 1. Identity Result                     │
+│ 2. Deviation Result                    │
+│ 3. Eye Gaze Result                     │
+│ 4. Person Count Result                 │
+│ 5. Object Detection Result             │
+│ 6. Baseline Head Pose Values           │
+│ 7. Detection Thresholds Used           │
+│ 8. Frame Statistics                    │
+│ 9. Violation Percentages               │
+│ 10. Overall Verdict                    │
+└────────────────────────────────────────┘
+
+
+DATA STRUCTURES
+---------------
+
+1. Reference Embedding: np.array([128 floats])
+   Example: [0.234, -0.891, 0.456, ...]
+
+2. Frame Counters: Dictionary
+   {
+     'frame_count': int,
+     'processed': int,
+     'same_person_frames': int,
+     'different_person_frames': int,
+     'deviation_frames': int,
+     'gaze_deviation_frames': int,
+     'multiple_person_frames': int,
+     'prohibited_object_frames': int
+   }
+
+3. Baseline Angles: Tuple
+   (baseline_yaw: float, baseline_pitch: float, baseline_roll: float)
+   Example: (5.3, 110.2, -2.1)
+
+4. Prohibited Objects: Dictionary
+   {
+     'Cell Phone': int,
+     'Book': int,
+     'Laptop': int
+   }
+   Example: {'Cell Phone': 5, 'Book': 2}
+
+
+================================================================================
+7. COMPLETE STEP-BY-STEP EXECUTION
+================================================================================
+
+TIMELINE OF COMPLETE EXECUTION (50 frames example)
+---------------------------------------------------
+
+TIME: 0s
+┌─────────────────────────────────────────┐
+│ >>> Script started                      │
+│ >>> Imports done                        │
+│ >>> FaceNet loaded                      │
+│ >>> MediaPipe models loaded             │
+│ >>> YOLO model loaded                   │
+└─────────────────────────────────────────┘
+
+TIME: 2s
+┌─────────────────────────────────────────┐
+│ >>> Loading reference image             │
+│ >>> Reference embedding created         │
+│ >>> Video opened                        │
+└─────────────────────────────────────────┘
+
+TIME: 3s - FRAME 0 (1st calibration frame)
+┌─────────────────────────────────────────┐
+│ 1. Read frame                           │
+│ 2. Convert BGR→RGB                      │
+│ 3. Detect face: ✓                       │
+│ 4. Extract bbox                         │
+│ 5. Verify identity: Authorized          │
+│ 6. Get face mesh landmarks              │
+│ 7. Calculate head pose:                 │
+│    yaw=5.1°, pitch=109.8°, roll=-2.3°   │
+│ 8. APPEND to calibration lists          │
+│ 9. Track gaze: Looking Center           │
+│ 10. YOLO detect: 1 person, no objects   │
+│                                         │
+│ OUTPUT:                                 │
+│ Frame 0: Authorized | Pose: Calibrating│
+│ (1/3) | Gaze: Normal (Looking Center)  │
+│ | Persons: Single | Objects: None      │
+└─────────────────────────────────────────┘
+
+TIME: 4s - FRAME 10 (2nd calibration frame)
+┌─────────────────────────────────────────┐
+│ Same as Frame 0, but:                   │
+│ - yaw=5.5°, pitch=110.6°, roll=-1.9°    │
+│ OUTPUT: Frame 10: ... Calibrating (2/3) │
+└─────────────────────────────────────────┘
+
+TIME: 5s - FRAME 20 (3rd calibration frame)
+┌─────────────────────────────────────────┐
+│ Same process, angles:                   │
+│ - yaw=5.3°, pitch=110.2°, roll=-2.1°    │
+│                                         │
+│ AFTER THIS FRAME:                       │
+│ Calculate baseline:                     │
+│ - baseline_yaw = mean(5.1,5.5,5.3)=5.3° │
+│ - baseline_pitch = mean(...)=110.2°     │
+│ - baseline_roll = mean(...)=-2.1°       │
+│ - Set baseline_calibrated = True        │
+│                                         │
+│ OUTPUT:                                 │
+│ Frame 20: ... Calibrating (3/3)         │
+│                                         │
+│ >>> Baseline calibrated: Yaw=5.3°,      │
+│     Pitch=110.2°, Roll=-2.1°            │
+└─────────────────────────────────────────┘
+
+TIME: 6s - FRAME 30 (1st analyzed frame)
+┌─────────────────────────────────────────┐
+│ 1. Read frame                           │
+│ 2. Face verification: Authorized        │
+│ 3. Get head pose: yaw=7.4°, p=110.4°,   │
+│    r=-2.3°                              │
+│ 4. Calculate RELATIVE angles:           │
+│    Δyaw = 7.4-5.3 = +2.1°               │
+│    Δpitch = 110.4-110.2 = +0.2°         │
+│    Δroll = -2.3-(-2.1) = -0.2°          │
+│ 5. Check thresholds:                    │
+│    |2.1|<15 ✓, |0.2|<10 ✓, |0.2|<10 ✓  │
+│    → NOT DEVIATING                      │
+│ 6. Eye gaze: ratio=0.48 → Center        │
+│ 7. YOLO: 1 person, no objects           │
+│                                         │
+│ OUTPUT:                                 │
+│ Frame 30: Authorized | Pose: Normal     │
+│ (ΔY=+2.1°, ΔP=+0.2°, ΔR=-0.2°) |       │
+│ Gaze: Normal (Looking Center) |         │
+│ Persons: Single | Objects: None         │
+└─────────────────────────────────────────┘
+
+TIME: 7s - FRAME 40 (deviation example)
+┌─────────────────────────────────────────┐
+│ Head pose: yaw=23.6°, p=108.9°, r=-1.5° │
+│ Relative angles:                        │
+│    Δyaw = 23.6-5.3 = +18.3° > 15° ✗     │
+│    Δpitch = 108.9-110.2 = -1.3° ✓       │
+│    Δroll = -1.5-(-2.1) = +0.6° ✓        │
+│ → DEVIATING (yaw exceeded)              │
+│ Eye gaze: ratio=0.29 → Looking Right    │
+│ → SUSPICIOUS                            │
+│                                         │
+│ Counters updated:                       │
+│ - deviation_frames++                    │
+│ - gaze_deviation_frames++               │
+│                                         │
+│ OUTPUT:                                 │
+│ Frame 40: Authorized | Pose: Deviating  │
+│ (ΔY=+18.3°, ΔP=-1.3°, ΔR=+0.6°) |      │
+│ Gaze: Suspicious (Looking Right) |      │
+│ Persons: Single | Objects: None         │
+└─────────────────────────────────────────┘
+
+TIME: 8s - FRAME 50 (violation example)
+┌─────────────────────────────────────────┐
+│ Identity: Authorized                    │
+│ Head pose: Normal                       │
+│ Eye gaze: Normal                        │
+│ YOLO detection:                         │
+│ - Detected: person (conf=0.82)          │
+│ - Detected: person (conf=0.75)          │
+│ - Detected: cell phone (conf=0.68)      │
+│                                         │
+│ Results:                                │
+│ - person_count = 2 → Multiple!          │
+│ - prohibited_objects = {                │
+│     'Cell Phone': 1                     │
+│   }                                     │
+│                                         │
+│ Counters updated:                       │
+│ - multiple_person_frames++              │
+│ - prohibited_object_frames++            │
+│                                         │
+│ OUTPUT:                                 │
+│ Frame 50: Authorized | Pose: Normal     │
+│ (ΔY=+1.2°, ΔP=+0.5°, ΔR=-0.3°) |       │
+│ Gaze: Normal (Looking Center) |         │
+│ Persons: Multiple (2) |                 │
+│ Objects: Found: Cell Phone(1)           │
+└─────────────────────────────────────────┘
+
+TIME: 9-20s - FRAMES 60-500
+┌─────────────────────────────────────────┐
+│ Continue processing...                  │
+│ (Similar analysis for each frame)       │
+│ Until processed >= MAX_FRAMES (50)      │
+└─────────────────────────────────────────┘
+
+TIME: 21s - FINAL DECISION PHASE
+┌─────────────────────────────────────────┐
+│ Total processed frames: 50              │
+│ Calibration frames: 3                   │
+│ Analyzed frames: 47                     │
+│                                         │
+│ Counters:                               │
+│ - same_person_frames: 48                │
+│ - different_person_frames: 2            │
+│ - deviation_frames: 5                   │
+│ - gaze_deviation_frames: 8              │
+│ - multiple_person_frames: 1             │
+│ - prohibited_object_frames: 1           │
+│                                         │
+│ VERDICT CALCULATIONS:                   │
+│                                         │
+│ 1. Identity: 48>2 → AUTHORIZED          │
+│                                         │
+│ 2. Deviation: 5 vs 25% of 47 = 11.75    │
+│    5 < 11.75 → NOT DEVIATED             │
+│                                         │
+│ 3. Gaze: 8 vs 30% of 47 = 14.1          │
+│    8 < 14.1 → NORMAL                    │
+│                                         │
+│ 4. Persons: 1 vs 20% of 47 = 9.4        │
+│    1 < 9.4 → SINGLE PERSON              │
+│                                         │
+│ 5. Objects: 1 vs 15% of 47 = 7.05       │
+│    1 < 7.05 → NO PROHIBITED OBJECTS     │
+│                                         │
+│ 6. Overall: All checks passed           │
+│    → ✓ EXAM VALID                       │
+└─────────────────────────────────────────┘
+
+TIME: 22s - DISPLAY FINAL REPORT
+┌═════════════════════════════════════════┓
+║      ========== FINAL RESULT ==========  ║
+║      Identity Result     : AUTHORIZED   ║
+║              PERSON                     ║
+║      Deviation Result    : NOT DEVIATED ║
+║      Eye Gaze Result     : NORMAL EYE   ║
+║              MOVEMENT                   ║
+║      Person Count Result : SINGLE PERSON║
+║      Object Detection    : NO PROHIBITED║
+║              OBJECTS                    ║
+║      ==================================  ║
+║      Baseline Head Pose  : Yaw=5.3°,    ║
+║          Pitch=110.2°, Roll=-2.1°       ║
+║      Detection Thresholds: ΔYaw=±15°,   ║
+║          ΔPitch=±10°, ΔRoll=±10°        ║
+║      ==================================  ║
+║      Total frames processed: 50         ║
+║      Calibration frames: 3              ║
+║      Analyzed frames: 47                ║
+║      Head pose deviation: 5 (10.6%)     ║
+║      Gaze deviation: 8 (17.0%)          ║
+║      Multiple persons: 1 (2.1%)         ║
+║      Prohibited objects: 1 (2.1%)       ║
+║      ==================================  ║
+║                                         ║
+║      ================================    ║
+║      FINAL VERDICT: ✓ EXAM VALID -      ║
+║          No violations detected         ║
+║      ================================    ║
+╚═════════════════════════════════════════╝
+
+
+TIME: 23s
+┌─────────────────────────────────────────┐
+│ Program Complete                        │
+│ Video stream released                   │
+│ Exit                                    │
+└─────────────────────────────────────────┘
+
+
+================================================================================
+KEY ALGORITHMS & FORMULAS
+================================================================================
+
+1. EUCLIDEAN DISTANCE (Face Verification)
+------------------------------------------
+distance = √(Σ(emb₁ᵢ - emb₂ᵢ)²) for i=1 to 128
+
+Or using NumPy: np.linalg.norm(embedding - ref_embedding)
+
+Threshold: < 1.0 = Same person
+
+
+2. PERSPECTIVE-N-POINT (Head Pose)
+-----------------------------------
+Given:
+- 3D model points M = [(x₁,y₁,z₁), ..., (x₆,y₆,z₆)]
+- 2D image points I = [(u₁,v₁), ..., (u₆,v₆)]
+- Camera matrix K
+
+Find rotation R and translation T such that:
+I ≈ K[R|T]M
+
+Using cv2.solvePnP with ITERATIVE method
+
+
+3. EULER ANGLES FROM ROTATION MATRIX
+-------------------------------------
+Given rotation matrix R:
+
+sy = √(R[0,0]² + R[1,0]²)
+
+pitch = atan2(R[2,1], R[2,2]) * 180/π
+yaw   = atan2(-R[2,0], sy) * 180/π
+roll  = atan2(R[1,0], R[0,0]) * 180/π
+
+
+4. GAZE RATIO CALCULATION
+--------------------------
+eye_width = |inner_corner_x - outer_corner_x|
+
+gaze_ratio = (iris_center_x - outer_corner_x) / eye_width
+
+Range: [0.0, 1.0]
+- 0.0-0.35: Looking away (right)
+- 0.35-0.65: Looking at screen (center)
+- 0.65-1.0: Looking away (left)
+
+
+5. BASELINE CALCULATION
+------------------------
+After collecting N calibration frames:
+
+baseline_yaw = mean([yaw₁, yaw₂, ..., yawₙ])
+baseline_pitch = mean([pitch₁, pitch₂, ..., pitchₙ])
+baseline_roll = mean([roll₁, roll₂, ..., rollₙ])
+
+Relative angles:
+Δyaw = current_yaw - baseline_yaw
+Δpitch = current_pitch - baseline_pitch
+Δroll = current_roll - baseline_roll
+
+
+6. THRESHOLD CALCULATIONS
+--------------------------
+For each violation type with threshold T%:
+
+violation_threshold = T * analyzed_frames
+
+Example: Deviation threshold at 25%
+- analyzed_frames = 47
+- threshold = 0.25 * 47 = 11.75 frames
+- If deviation_frames >= 12 → DEVIATED
+
+
+================================================================================
+PERFORMANCE METRICS
+================================================================================
+
+PROCESSING TIME (Approximate)
+------------------------------
+- Model loading: 5-10 seconds (one-time)
+- Reference embedding: 0.1-0.2 seconds
+- Per frame processing:
+  * Face detection: 10-20ms
+  * FaceNet embedding: 30-50ms
+  * Face mesh: 15-25ms
+  * Head pose calculation: 5-10ms
+  * Eye gaze: 5-10ms
+  * YOLO detection: 20-40ms
+  * Total per frame: ~100-150ms
+
+For 50 frames: ~5-8 seconds processing
+Total runtime: ~15-20 seconds
+
+
+ACCURACY METRICS
+----------------
+- Face recognition: ~98% (with proper lighting)
+- Head pose: ±3-5° accuracy
+- Eye gaze: ±10-15° accuracy
+- YOLO detection: ~85-95% (depends on object visibility)
+
+
+RESOURCE USAGE
+--------------
+- RAM: 1-2 GB
+- CPU: Moderate (1-2 cores at 60-80%)
+- GPU: Optional (speeds up by 3-5x if available)
+
+
+================================================================================
+ERROR HANDLING & EDGE CASES
+================================================================================
+
+1. No face in reference image
+   → Program exits with error message
+
+2. No face detected in video frame
+   → Skip frame, continue to next
+
+3. Face too small/far
+   → May skip (bbox validation)
+
+4. Multiple faces in frame
+   → Uses first detected face for identity
+   → Counts all faces for violation
+
+5. Poor lighting
+   → May reduce detection accuracy
+   → Confidence thresholds help filter
+
+6. Baseline calibration failure
+   → Would proceed without baseline
+   → Fall back to absolute angles
+   → Warning in final report
+
+7. Video file not found
+   → OpenCV error, program exits
+
+8. Insufficient frames in video
+   → Process what's available
+   → May not reach MAX_FRAMES
+
+
+================================================================================
+CUSTOMIZATION POINTS
+================================================================================
+
+Values you can modify:
+
+1. Frame skip rate: frame_count % 10 (line ~270)
+2. MAX_FRAMES: 50 (line ~238)
+3. CALIBRATION_FRAMES: 3 (line ~234)
+4. Face match threshold: 1.0 (line ~295)
+5. Head pose thresholds: ±15°, ±10°, ±10° (line ~320)
+6. Gaze ratio thresholds: 0.35, 0.65 (line ~138)
+7. YOLO confidence: 0.5 (person), 0.4 (objects)
+8. Violation thresholds: 25%, 30%, 20%, 15%
+9. MediaPipe confidence: 0.6
+
+
+================================================================================
+END OF FLOW DOCUMENTATION
+================================================================================
+
+For questions or clarification on any flow, refer to the corresponding
+section of this document or the inline comments in app.py.
+
+This document represents the complete logical flow of the Online Proctoring
+System as of the current implementation.
