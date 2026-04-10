@@ -114,7 +114,7 @@ MIN_BOX_AREA = 5000
 DETECTION_HISTORY_WINDOW = 5
 DETECTION_PROCESS_EVERY_N = 2
 ABSENCE_SECONDS_THRESHOLD = 3
-VIOLATION_CONTINUOUS_FRAMES_THRESHOLD = 5
+VIOLATION_FRAMES_THRESHOLD = 15
 
 # YOLO classes
 PERSON_CLASS = 0
@@ -544,20 +544,20 @@ def check_unified_continuous_termination(frame_number):
     """Terminate session when any tracked violation persists across the unified frame threshold."""
     termination_reason = None
 
-    if session_state['unauthorized_person_frames'] >= VIOLATION_CONTINUOUS_FRAMES_THRESHOLD:
+    if session_state['unauthorized_person_frames'] >= VIOLATION_FRAMES_THRESHOLD:
         termination_reason = 'unauthorized_person'
 
-    if session_state['multiple_person_frames'] >= VIOLATION_CONTINUOUS_FRAMES_THRESHOLD:
+    if session_state['multiple_person_frames'] >= VIOLATION_FRAMES_THRESHOLD:
         termination_reason = 'multiple_person'
 
-    if session_state['object_frames'] >= VIOLATION_CONTINUOUS_FRAMES_THRESHOLD:
+    if session_state['object_frames'] >= VIOLATION_FRAMES_THRESHOLD:
         termination_reason = 'prohibited_object'
 
-    if session_state['spoof_continuous_frames'] >= VIOLATION_CONTINUOUS_FRAMES_THRESHOLD:
+    if session_state['spoof_continuous_frames'] >= VIOLATION_FRAMES_THRESHOLD:
         termination_reason = 'spoof_detected'
 
-    if session_state['pose_deviation_frames'] >= VIOLATION_CONTINUOUS_FRAMES_THRESHOLD:
-        termination_reason = 'head_pose_deviation'
+    if session_state['gaze_deviation_frames'] >= VIOLATION_FRAMES_THRESHOLD:
+        termination_reason = 'gaze_deviation'
 
     if termination_reason is None or session_state['termination_triggered']:
         return False, None
@@ -581,6 +581,30 @@ def check_unified_continuous_termination(frame_number):
     socketio.emit('critical_violation', critical_payload)
     print("CRITICAL VIOLATION EMITTED")
     return True, critical_payload
+
+
+def cap_violation_counters():
+    """Clamp unified violation counters to the global threshold."""
+    session_state['unauthorized_person_frames'] = min(
+        session_state['unauthorized_person_frames'],
+        VIOLATION_FRAMES_THRESHOLD
+    )
+    session_state['multiple_person_frames'] = min(
+        session_state['multiple_person_frames'],
+        VIOLATION_FRAMES_THRESHOLD
+    )
+    session_state['object_frames'] = min(
+        session_state['object_frames'],
+        VIOLATION_FRAMES_THRESHOLD
+    )
+    session_state['spoof_continuous_frames'] = min(
+        session_state['spoof_continuous_frames'],
+        VIOLATION_FRAMES_THRESHOLD
+    )
+    session_state['gaze_deviation_frames'] = min(
+        session_state['gaze_deviation_frames'],
+        VIOLATION_FRAMES_THRESHOLD
+    )
 
 
 def safe_div(numerator, denominator):
@@ -1079,7 +1103,7 @@ def get_stats():
             'object_continuous_frames_threshold': OBJECT_CONTINUOUS_FRAMES_THRESHOLD,
             'multiple_person_continuous_frames_threshold': MULTIPLE_PERSON_CONTINUOUS_FRAMES_THRESHOLD,
             'spoof_continuous_frames_threshold': SPOOF_CONTINUOUS_FRAMES_THRESHOLD,
-            'unified_continuous_frames_threshold': VIOLATION_CONTINUOUS_FRAMES_THRESHOLD,
+            'unified_continuous_frames_threshold': VIOLATION_FRAMES_THRESHOLD,
             'absence_seconds_threshold': ABSENCE_SECONDS_THRESHOLD,
             'pose_deviation_seconds_threshold': POSE_DEVIATION_SECONDS_THRESHOLD,
             'cooldown_seconds': DETECTION_COOLDOWN_SECONDS,
@@ -1220,13 +1244,14 @@ def handle_frame(data):
                 f"Spoof: SPOOF DETECTED ({spoof_confidence:.2f})"
             )
 
+            cap_violation_counters()
+
             print(
-                f"Frame {session_state['frame_count']}:\n"
-                f"Object Frames: {session_state['object_continuous_frames']}\n"
-                f"Person Frames: {session_state['person_continuous_frames']}\n"
-                f"Spoof Frames: {session_state['spoof_continuous_frames']}\n"
-                f"Unauthorized Frames: {session_state['unauthorized_person_frames']}\n"
-                f"Pose Deviation Frames: {session_state['pose_deviation_frames']}"
+                "Unauthorized:", session_state['unauthorized_person_frames'],
+                "Multiple:", session_state['multiple_person_frames'],
+                "Object:", session_state['object_frames'],
+                "Spoof:", session_state['spoof_continuous_frames'],
+                "Gaze:", session_state['gaze_deviation_frames']
             )
 
             termination_triggered, critical_payload = check_unified_continuous_termination(
@@ -1422,10 +1447,7 @@ def handle_frame(data):
             else:
                 pose_status = "Normal"
 
-        if pose_deviated_for_timer:
-            session_state['pose_deviation_frames'] += 1
-        else:
-            session_state['pose_deviation_frames'] = 0
+        session_state['pose_deviation_frames'] = 0
         
         # Adaptive geometric gaze with temporal filtering and head-pose fusion
         gaze_result = get_adaptive_gaze_result(
@@ -1466,6 +1488,8 @@ def handle_frame(data):
 
         if gaze_result['violation'] and session_state['baseline_calibrated']:
             session_state['gaze_deviation_frames'] += 1
+        else:
+            session_state['gaze_deviation_frames'] = 0
 
         # Optional ground-truth label for research metrics from client payload.
         expected_gaze_deviation = data.get('expected_gaze_deviation')
@@ -1503,6 +1527,8 @@ def handle_frame(data):
         else:
             session_state['object_continuous_frames'] = 0
             session_state['object_frames'] = 0
+
+        cap_violation_counters()
 
         session_state['multiple_person_violation'] = (
             session_state['person_continuous_frames'] >= MULTIPLE_PERSON_CONTINUOUS_FRAMES_THRESHOLD
@@ -1570,12 +1596,11 @@ def handle_frame(data):
         )
 
         print(
-            f"Frame {session_state['frame_count']}:\n"
-            f"Object Frames: {session_state['object_continuous_frames']}\n"
-            f"Person Frames: {session_state['person_continuous_frames']}\n"
-            f"Spoof Frames: {session_state['spoof_continuous_frames']}\n"
-            f"Unauthorized Frames: {session_state['unauthorized_person_frames']}\n"
-            f"Pose Deviation Frames: {session_state['pose_deviation_frames']}"
+            "Unauthorized:", session_state['unauthorized_person_frames'],
+            "Multiple:", session_state['multiple_person_frames'],
+            "Object:", session_state['object_frames'],
+            "Spoof:", session_state['spoof_continuous_frames'],
+            "Gaze:", session_state['gaze_deviation_frames']
         )
 
         termination_triggered, critical_payload = check_unified_continuous_termination(
@@ -1732,7 +1757,7 @@ def handle_frame(data):
                 'unauthorized_person_frames': session_state['unauthorized_person_frames'],
                 'object_frames': session_state['object_frames'],
                 'pose_deviation_frames': session_state['pose_deviation_frames'],
-                'unified_continuous_frames_threshold': VIOLATION_CONTINUOUS_FRAMES_THRESHOLD,
+                'unified_continuous_frames_threshold': VIOLATION_FRAMES_THRESHOLD,
                 'object_continuous_frames_threshold': OBJECT_CONTINUOUS_FRAMES_THRESHOLD,
                 'multiple_person_continuous_frames_threshold': MULTIPLE_PERSON_CONTINUOUS_FRAMES_THRESHOLD,
                 'spoof_continuous_frames_threshold': SPOOF_CONTINUOUS_FRAMES_THRESHOLD,

@@ -111,7 +111,7 @@ Technology Stack:
                     │   - Identity            │
                     │   - Deviation           │
                     │   - Gaze                │
-                    │   - Person count        │
+                    │   - Person count  venv\Scripts\activate      │
                     │   - Objects             │
                     │   - Final verdict       │
                     └────────────┬────────────┘
